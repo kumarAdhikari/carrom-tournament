@@ -9,7 +9,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ImagePlus, Plus, Trash2, Trophy, Upload, Users, Shuffle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { parseTournamentBackupJson, useTournament } from "@/contexts/TournamentContext";
+import { useTournament } from "@/contexts/TournamentContext";
+import { parseBackupWithPasswordPrompt } from "@/lib/restoreBackupPrompt";
 import { imageFileToStoredAvatarUrl } from "@/lib/imageCompress";
 import type { PlayerSeed } from "@/lib/tournament";
 import { BROWSER_LOCAL_ONLY } from "@/lib/runtimeConfig";
@@ -110,11 +111,15 @@ export default function SetupPage() {
     setError("");
     try {
       const text = await file.text();
-      const next = parseTournamentBackupJson(text);
-      if (!next) {
+      const parsed = await parseBackupWithPasswordPrompt(text);
+      if (!parsed.ok) {
+        if (parsed.reason === "cancelled") {
+          setRestoreNotice({ tone: "err", text: "Restore cancelled." });
+          return;
+        }
         setRestoreNotice({
           tone: "err",
-          text: "Not a valid Carrom backup (wrong version or corrupted file).",
+          text: "Not a valid Carrom backup (wrong version, bad password, or corrupted file).",
         });
         return;
       }
@@ -125,7 +130,7 @@ export default function SetupPage() {
       ) {
         return;
       }
-      restoreTournamentFromBackup(next);
+      restoreTournamentFromBackup(parsed.state);
     } catch {
       setRestoreNotice({ tone: "err", text: "Could not read that file." });
     }
@@ -375,8 +380,8 @@ export default function SetupPage() {
               </p>
               <p className="text-xs leading-relaxed" style={{ color: "rgba(239,239,239,0.45)" }}>
                 Host can use <strong style={{ color: "rgba(239,239,239,0.65)" }}>Roster → Download backup</strong> and
-                send you the JSON. Open it here to copy the full tournament — teams, profile photos, every match and
-                score — onto this laptop or phone browser.
+                send you the JSON (optionally password-protected). Open it here; if it’s encrypted you’ll be asked for
+                the password. Restoring copies the full tournament — teams, photos, every match — onto this browser.
               </p>
               <Button
                 type="button"

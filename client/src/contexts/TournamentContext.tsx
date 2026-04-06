@@ -4,6 +4,7 @@
 // =============================================================================
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from "react";
+import { isEncryptedBackupFile, decryptBackupToPlaintext } from "@/lib/backupCrypto";
 import {
   TournamentState,
   MatchResult,
@@ -147,12 +148,43 @@ function parseStoredTournamentState(raw: string | null): TournamentState | null 
 /** Backup / export uses this version inside the JSON wrapper `{ version, state }`. */
 export const TOURNAMENT_BACKUP_FILE_VERSION = TOURNAMENT_STORAGE_VERSION;
 
+export type BackupParseResult =
+  | { ok: true; state: TournamentState }
+  | { ok: false; reason: "invalid" | "needs_password" | "wrong_password" };
+
 /**
- * Parse a downloaded backup file or equivalent JSON string (same schema as localStorage).
- * Includes full state: players with `avatarUrl` data URLs, league, tiebreaker, knockout, etc.
+ * Parse a backup file: plain `{ version, state }` or password-wrapped encrypted export.
+ * If encrypted and `password` is omitted, returns `needs_password` so the UI can prompt.
  */
-export function parseTournamentBackupJson(raw: string): TournamentState | null {
-  return parseStoredTournamentState(raw.trim());
+export async function parseTournamentBackup(raw: string, password?: string | null): Promise<BackupParseResult> {
+  const trimmed = raw.trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
+
+  if (isRecord(parsed) && isEncryptedBackupFile(parsed)) {
+    if (password == null || password === "") {
+      return { ok: false, reason: "needs_password" };
+    }
+    const inner = await decryptBackupToPlaintext(parsed, password);
+    if (inner === null) {
+      return { ok: false, reason: "wrong_password" };
+    }
+    const state = parseStoredTournamentState(inner);
+    if (!state) {
+      return { ok: false, reason: "invalid" };
+    }
+    return { ok: true, state };
+  }
+
+  const state = parseStoredTournamentState(trimmed);
+  if (!state) {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true, state };
 }
 
 function loadStoredTournamentState(): TournamentState {

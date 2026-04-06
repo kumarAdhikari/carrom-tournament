@@ -9,12 +9,10 @@ import { ChevronLeft, Download, ImagePlus, Upload, UserPen, X } from "lucide-rea
 import { PlayerFaceCircle } from "@/components/PlayerFaceCircle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  parseTournamentBackupJson,
-  TOURNAMENT_BACKUP_FILE_VERSION,
-  useTournament,
-} from "@/contexts/TournamentContext";
+import { TOURNAMENT_BACKUP_FILE_VERSION, useTournament } from "@/contexts/TournamentContext";
+import { encryptBackupPlaintext } from "@/lib/backupCrypto";
 import { imageFileToStoredAvatarUrl } from "@/lib/imageCompress";
+import { parseBackupWithPasswordPrompt } from "@/lib/restoreBackupPrompt";
 import type { Player } from "@/lib/tournament";
 
 function PlayerEditRow({
@@ -144,14 +142,34 @@ export default function PlayerEditPage() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const restoreInputRef = useRef<HTMLInputElement>(null);
   const [backupNotice, setBackupNotice] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [backupProtectWithPassword, setBackupProtectWithPassword] = useState(true);
+  const [backupPass, setBackupPass] = useState("");
+  const [backupPassConfirm, setBackupPassConfirm] = useState("");
+  const [backupDlError, setBackupDlError] = useState<string | null>(null);
 
-  const downloadBackup = () => {
-    const blob = new Blob(
-      [JSON.stringify({ version: TOURNAMENT_BACKUP_FILE_VERSION, state }, null, 2)],
-      {
-        type: "application/json",
+  const downloadBackup = async () => {
+    setBackupDlError(null);
+    const plain = JSON.stringify({ version: TOURNAMENT_BACKUP_FILE_VERSION, state }, null, 2);
+    let out: string;
+    if (backupProtectWithPassword) {
+      if (!backupPass) {
+        setBackupDlError("Choose a password for this file.");
+        return;
       }
-    );
+      if (backupPass !== backupPassConfirm) {
+        setBackupDlError("Password and confirmation must match.");
+        return;
+      }
+      try {
+        out = await encryptBackupPlaintext(plain, backupPass);
+      } catch {
+        setBackupDlError("Could not encrypt this backup.");
+        return;
+      }
+    } else {
+      out = plain;
+    }
+    const blob = new Blob([out], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -167,11 +185,15 @@ export default function PlayerEditPage() {
     setBackupNotice(null);
     try {
       const text = await file.text();
-      const next = parseTournamentBackupJson(text);
-      if (!next) {
+      const parsed = await parseBackupWithPasswordPrompt(text);
+      if (!parsed.ok) {
+        if (parsed.reason === "cancelled") {
+          setBackupNotice({ tone: "err", text: "Restore cancelled." });
+          return;
+        }
         setBackupNotice({
           tone: "err",
-          text: "Could not load backup (wrong version, corrupted JSON, or not a Carrom tournament file).",
+          text: "Could not load backup (wrong version, corrupted file, or not a Carrom tournament file).",
         });
         return;
       }
@@ -182,7 +204,7 @@ export default function PlayerEditPage() {
       ) {
         return;
       }
-      restoreTournamentFromBackup(next);
+      restoreTournamentFromBackup(parsed.state);
       setBackupNotice({
         tone: "ok",
         text: "Restored. This tab and the display board update automatically; other control tabs sync via storage.",
@@ -202,13 +224,69 @@ export default function PlayerEditPage() {
         Backup & restore
       </p>
       <p className="text-xs leading-relaxed" style={{ color: "rgba(239,239,239,0.55)" }}>
-        JSON contains the full tournament state: players (names and profile pictures as embedded image data), every
-        match, standings progress, tiebreakers, knockout bracket, and champion — identical to what this browser saves.
+        Full tournament snapshot (players, photos, every result). You can encrypt the file with a password so only
+        someone with the password can restore it (AES-GCM + PBKDF2 in the browser).
       </p>
+      <label className="flex items-start gap-2.5 text-xs cursor-pointer select-none">
+        <input
+          type="checkbox"
+          className="mt-0.5 rounded border"
+          checked={backupProtectWithPassword}
+          onChange={(e) => {
+            setBackupProtectWithPassword(e.target.checked);
+            setBackupDlError(null);
+          }}
+          style={{ borderColor: "rgba(255,255,255,0.2)" }}
+        />
+        <span style={{ color: "rgba(239,239,239,0.65)" }}>
+          Password-protect download (recommended when sharing). Uncheck for a plain JSON file (older behavior).
+        </span>
+      </label>
+      {backupProtectWithPassword ? (
+        <div className="space-y-2">
+          <Input
+            type="password"
+            placeholder="Password"
+            value={backupPass}
+            onChange={(e) => {
+              setBackupPass(e.target.value);
+              setBackupDlError(null);
+            }}
+            className="h-10 text-sm"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "#EFEFEF",
+            }}
+            autoComplete="new-password"
+          />
+          <Input
+            type="password"
+            placeholder="Confirm password"
+            value={backupPassConfirm}
+            onChange={(e) => {
+              setBackupPassConfirm(e.target.value);
+              setBackupDlError(null);
+            }}
+            className="h-10 text-sm"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "#EFEFEF",
+            }}
+            autoComplete="new-password"
+          />
+        </div>
+      ) : null}
+      {backupDlError ? (
+        <p className="text-xs" style={{ color: "#DC2626" }}>
+          {backupDlError}
+        </p>
+      ) : null}
       <div className="flex flex-col gap-2">
         <Button
           type="button"
-          onClick={downloadBackup}
+          onClick={() => void downloadBackup()}
           variant="outline"
           className="w-full h-11 rounded-xl gap-2"
           style={{ borderColor: "rgba(255,255,255,0.12)", color: "rgba(239,239,239,0.75)" }}
